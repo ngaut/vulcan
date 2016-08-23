@@ -22,31 +22,43 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/pkg/errors"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
+	pconfig "github.com/prometheus/prometheus/config"
 )
 
 // HTTPTarget represents an instance of an HTTP scraper target.
 type HTTPTarget struct {
-	u *url.URL
-	i time.Duration
-	j JobName
+	u       *url.URL
+	i       time.Duration
+	j       JobName
+	fetcher func(*url.URL) ([]*dto.MetricFamily, error)
 }
 
 // HTTPTargetConfig represents the configuration of an HTTPTarget.
 type HTTPTargetConfig struct {
-	Interval time.Duration
-	URL      *url.URL
-	JobName  JobName
+	Interval    time.Duration
+	URL         *url.URL
+	JobName     JobName
+	RelabelCfgs []*pconfig.RelabelConfig
 }
 
 // NewHTTPTarget creates an instance of HTTPTarget.
 func NewHTTPTarget(config *HTTPTargetConfig) *HTTPTarget {
-	return &HTTPTarget{
+	tg := &HTTPTarget{
 		u: config.URL,
 		i: config.Interval,
 		j: config.JobName,
 	}
+	if len(config.RelabelCfgs) > 1 && config.RelabelCfgs[0] != nil {
+		r := &relabeler{relabelCfgs: config.RelabelCfgs}
+		tg.fetcher = r.fetchAndRelabel
+	} else {
+		tg.fetcher = fetch
+	}
+
+	return tg
 }
 
 // Equals checkfs if the instance's current target is the same as the
@@ -63,7 +75,7 @@ func (ht *HTTPTarget) Equals(other Targeter) bool {
 // a prometheus MetricFamily type.
 func (ht *HTTPTarget) Fetch() ([]*dto.MetricFamily, error) {
 	at := time.Now() // timestamp metrics with time scraper initiated
-	fam, err := ht.fetch()
+	fam, err := ht.fetcher(ht.u)
 	if err != nil {
 		return fam, err
 	}
@@ -96,7 +108,7 @@ func annotate(fams []*dto.MetricFamily, target Target) {
 	}
 }
 
-func (ht HTTPTarget) fetch() ([]*dto.MetricFamily, error) {
+func (ht *HTTPTarget) fetch() ([]*dto.MetricFamily, error) {
 	resp, err := http.Get(ht.u.String())
 	if err != nil {
 		return []*dto.MetricFamily{}, err
@@ -135,4 +147,18 @@ func timestamp(fams []*dto.MetricFamily, at time.Time) {
 			}
 		}
 	}
+}
+
+func fetch(u *url.URL) ([]*dto.MetricFamily, error) {
+	resp, err := http.Get(u.String())
+	if err != nil {
+		return []*dto.MetricFamily{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, errors.Errorf("response status %s", resp.Status)
+	}
+
+	return parse(resp.Body, resp.Header)
 }

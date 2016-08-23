@@ -171,7 +171,7 @@ func (pt *PathTargeter) k8Jobs(
 	)
 
 	for i, config := range sc.KubernetesSDConfigs {
-		ll = ll.WithField("config", *config)
+		ll = ll.WithField("kubernetes_config", *config)
 		ll.Debug("processing k8 config")
 
 		kd, err := providerFn(config)
